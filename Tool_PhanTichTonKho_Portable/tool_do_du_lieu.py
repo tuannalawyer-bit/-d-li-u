@@ -33,7 +33,7 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DEFAULT_XLSB_PATH = os.path.join(BASE_DIR, "raw mẫu", "updated_data_moi.xlsb")
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 APP_TITLE = "Tool Đổ Dữ Liệu Phân Tích Tồn Kho"
 SCRATCH_DIR = tempfile.mkdtemp(prefix="tool_do_du_lieu_")
 
@@ -272,6 +272,12 @@ def compute_row(row_dict: dict, milestone_date: datetime, ref_amount: float,
 
     # --- Col Z: Date tham khảo = tra cứu từ XLSB theo mã SP ---
     z_shelf_life = shelf_life_map.get(art_code_str)
+    if z_shelf_life is None:
+        orig_z = row_dict.get('Z')
+        if orig_z == '#N/A' or orig_z is None:
+            z_shelf_life = '#N/A'
+        else:
+            z_shelf_life = safe_float(orig_z)
     result['Z'] = z_shelf_life
 
     # --- Col AA: DIO (D-15) ---
@@ -281,6 +287,22 @@ def compute_row(row_dict: dict, milestone_date: datetime, ref_amount: float,
     else:
         aa_val = gia_ton_d15 / gia_von * 90
     result['AA'] = aa_val
+
+    # Nếu Z là '#N/A', propagate '#N/A' cho AB, AD, AE, AF
+    if z_shelf_life == '#N/A':
+        result['AB'] = '#N/A'
+        result['AD'] = '#N/A'
+        result['AE'] = '#N/A'
+        result['AF'] = '#N/A'
+        # Tính AC độc lập
+        ac_note = ''
+        if last_sale_gt90:
+            if last_gr_gt90:
+                ac_note = 'không giao dịch >90 ngày'
+            else:
+                ac_note = 'Không sale 90 ngày'
+        result['AC'] = ac_note if ac_note else None
+        return result
 
     # --- Col AB: DIO/Date = AA / Z ---
     if aa_val is not None and z_shelf_life is not None and z_shelf_life > 0:
@@ -400,6 +422,8 @@ def process_excel_file(src_path: str, shelf_life_map: dict, milestone_date: date
             bottom=Side(style='thin', color='D9D9D9')
         )
         align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        align_left = Alignment(horizontal='left', vertical='center')
+        align_right = Alignment(horizontal='right', vertical='center')
 
         # Màu cho từng phân loại
         phan_loai_style = {
@@ -592,10 +616,10 @@ def process_excel_file(src_path: str, shelf_life_map: dict, milestone_date: date
                             elem.clear()
                             continue
 
-                        # Chuẩn hóa
+                        # Chuẩn hóa (nạp thêm Z cũ từ dữ liệu gốc)
                         norm_row = {}
                         cols_to_norm = ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
-                                        'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X']
+                                        'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Z']
                         for col_std in cols_to_norm:
                             col_act = get_actual_col(col_std, offset)
                             norm_row[col_std] = current_row_data.get(col_act)
@@ -610,7 +634,9 @@ def process_excel_file(src_path: str, shelf_life_map: dict, milestone_date: date
 
                         # Build row_list
                         row_list = [None] * 31
-                        for col_l in cols_to_norm:
+                        # Sao chép các cột từ B đến X (trừ Z cũ vì Z sẽ được cập nhật từ computed)
+                        for col_l in ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+                                      'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X']:
                             row_list[col_to_idx(col_l) - 1] = norm_row.get(col_l)
 
                         for col_l, key in [('Y', 'Y'), ('Z', 'Z'), ('AA', 'AA'),
@@ -618,16 +644,72 @@ def process_excel_file(src_path: str, shelf_life_map: dict, milestone_date: date
                                             ('AE', 'AE'), ('AF', 'AF')]:
                             row_list[col_to_idx(col_l) - 1] = computed.get(key)
 
-                        # Tối ưu ghi file: Chỉ dùng WriteOnlyCell cho cột AF cần tô màu
-                        cells_out = list(row_list)
-                        fill_af, font_af = phan_loai_style.get(phan_loai, (None, font_normal))
-                        
-                        cell_af = WriteOnlyCell(ws_out, value=phan_loai)
-                        cell_af.font = font_af
-                        if fill_af:
-                            cell_af.fill = fill_af
-                        cells_out[30] = cell_af  # index 30 là AF
-                        
+                        # Tối ưu ghi file: Định dạng (format) hiển thị cho các cột số, ngày và tỷ lệ
+                        cells_out = []
+                        for col_out_idx in range(31):
+                            col_letter = ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+                                          'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
+                                          'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'AA', 'AB',
+                                          'AC', 'AD', 'AE', 'AF'][col_out_idx]
+                            val = row_list[col_out_idx]
+
+                            if col_letter in ('M', 'W', 'X') and val is not None:
+                                dt = excel_date_to_datetime(val) if not (col_letter in ('W', 'X') and str(val).strip() == '>90') else None
+                                if dt:
+                                    cell = WriteOnlyCell(ws_out, value=dt)
+                                    cell.number_format = 'dd/mm/yyyy'
+                                    cell.font = font_normal
+                                    cell.alignment = align_center
+                                else:
+                                    cell = WriteOnlyCell(ws_out, value=val)
+                                    cell.font = font_normal
+                                    cell.alignment = align_center
+                                cells_out.append(cell)
+
+                            elif col_letter in ('N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'Y', 'Z') and val is not None:
+                                try:
+                                    if col_letter == 'Y' and str(val).strip() == '>90':
+                                        cell = WriteOnlyCell(ws_out, value=val)
+                                        cell.font = font_normal
+                                        cell.alignment = align_right
+                                    else:
+                                        num_val = int(float(val))
+                                        cell = WriteOnlyCell(ws_out, value=num_val)
+                                        cell.number_format = '#,##0'
+                                        cell.font = font_normal
+                                        cell.alignment = align_right
+                                except (ValueError, TypeError):
+                                    cell = WriteOnlyCell(ws_out, value=val)
+                                    cell.font = font_normal
+                                    cell.alignment = align_right
+                                cells_out.append(cell)
+
+                            elif col_letter in ('AA', 'AB') and val is not None:
+                                try:
+                                    num_val = float(val)
+                                    cell = WriteOnlyCell(ws_out, value=num_val)
+                                    cell.number_format = '0.00'
+                                    cell.font = font_normal
+                                    cell.alignment = align_right
+                                except (ValueError, TypeError):
+                                    cell = WriteOnlyCell(ws_out, value=val)
+                                    cell.font = font_normal
+                                    cell.alignment = align_right
+                                cells_out.append(cell)
+
+                            elif col_letter == 'AF':
+                                fill_af, font_af = phan_loai_style.get(phan_loai, (None, font_normal))
+                                cell = WriteOnlyCell(ws_out, value=val)
+                                cell.font = font_af
+                                if fill_af:
+                                    cell.fill = fill_af
+                                cell.alignment = align_center
+                                cells_out.append(cell)
+
+                            else:
+                                # Các cột chuỗi thường (B, C, D, E, F, G, H, I, J, K, L, AC, AD, AE) ghi thô
+                                cells_out.append(val)
+
                         ws_out.append(cells_out)
                         rows_written += 1
 

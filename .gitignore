@@ -20,3 +20,8 @@ Lê Duy Đức (done).xlsx
 # OS files
 .DS_Store
 Thumbs.db
+
+# Ignore portable python environment and data database
+Tool_PhanTichTonKho_Portable/python_embed/
+Tool_PhanTichTonKho_Portable/raw mẫu/
+raw mẫu/

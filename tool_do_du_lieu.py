@@ -273,7 +273,11 @@ def compute_row(row_dict: dict, milestone_date: datetime, ref_amount: float,
     # --- Col Z: Date tham khảo = tra cứu từ XLSB theo mã SP ---
     z_shelf_life = shelf_life_map.get(art_code_str)
     if z_shelf_life is None:
-        z_shelf_life = safe_float(row_dict.get('Z'))
+        orig_z = row_dict.get('Z')
+        if orig_z == '#N/A' or orig_z is None:
+            z_shelf_life = '#N/A'
+        else:
+            z_shelf_life = safe_float(orig_z)
     result['Z'] = z_shelf_life
 
     # --- Col AA: DIO (D-15) ---
@@ -283,6 +287,22 @@ def compute_row(row_dict: dict, milestone_date: datetime, ref_amount: float,
     else:
         aa_val = gia_ton_d15 / gia_von * 90
     result['AA'] = aa_val
+
+    # Nếu Z là '#N/A', propagate '#N/A' cho AB, AD, AE, AF
+    if z_shelf_life == '#N/A':
+        result['AB'] = '#N/A'
+        result['AD'] = '#N/A'
+        result['AE'] = '#N/A'
+        result['AF'] = '#N/A'
+        # Tính AC độc lập
+        ac_note = ''
+        if last_sale_gt90:
+            if last_gr_gt90:
+                ac_note = 'không giao dịch >90 ngày'
+            else:
+                ac_note = 'Không sale 90 ngày'
+        result['AC'] = ac_note if ac_note else None
+        return result
 
     # --- Col AB: DIO/Date = AA / Z ---
     if aa_val is not None and z_shelf_life is not None and z_shelf_life > 0:
